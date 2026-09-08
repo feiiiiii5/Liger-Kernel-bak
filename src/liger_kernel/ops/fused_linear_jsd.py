@@ -25,6 +25,37 @@ _TORCH_VERSION = Version(torch.__version__.split("+")[0])
 _ADDMM_SUPPORTS_OUT_DTYPE = _TORCH_VERSION >= Version("2.8.0")
 
 
+def _fp32_projected_logits(x_chunk: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Compute ``x_chunk @ weight.t()`` directly in FP32.
+
+    The previous code ran the GEMM in the input dtype (bf16/fp16) and then
+    ``.to(torch.float32)`` — a precision-inert cast: cuBLAS already accumulates
+    in FP32 internally, but the store rounds to the low-precision mantissa
+    first. JSD gradients difference near-equal distributions, so that rounding
+    cancels catastrophically (4-23% grad error in bf16).
+
+    ``torch.mm(..., out_dtype=torch.float32)`` (torch >= 2.8, CUDA sm_80+)
+    keeps the FP32 accumulator at no cost: a bf16xbf16 / fp16xfp16 product is
+    exactly representable in FP32 and accumulation is FP32 either way, while
+    keeping low-precision tensor cores and no FP32 weight copy. Everywhere
+    else fall back to an explicit FP32 GEMM, which is numerically equivalent.
+    """
+    if x_chunk.dtype == torch.float32 and weight.dtype == torch.float32:
+        return x_chunk @ weight.t()
+    if (
+        _ADDMM_SUPPORTS_OUT_DTYPE
+        and x_chunk.device.type == "cuda"
+        and x_chunk.dtype == weight.dtype
+        and x_chunk.dtype in (torch.float16, torch.bfloat16)
+        and torch.cuda.get_device_capability(x_chunk.device)[0] >= 8
+    ):
+        try:
+            return torch.mm(x_chunk, weight.t(), out_dtype=torch.float32)
+        except RuntimeError:
+            pass
+    return x_chunk.float() @ weight.float().t()
+
+
 def _max_capability() -> int:
     # Runtime dispatch-plane key (e.g. 100 = sm_100/B200, 103 = sm_103/B300).
     # Called per wrapper invocation (never memoized) so mock-cc suites key
@@ -132,10 +163,12 @@ def fused_linear_jsd_forward(
         teacher_input_chunk = teacher_input[start_idx:end_idx]
 
         # shape: chunk_size x V
-        # For anything starting from logits to the final JSD loss, we do computation
-        # in FP32 to avoid losing numerical stability.
-        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(torch.float32)
-        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
+        # Project directly in FP32: the GEMM accumulator is FP32, so keep it
+        # instead of rounding logits to the input dtype first (see
+        # _fp32_projected_logits). Everything from logits to the JSD loss then
+        # runs in FP32 for numerical stability.
+        student_logits_chunk = _fp32_projected_logits(student_input_chunk, student_weight)
+        teacher_logits_chunk = _fp32_projected_logits(teacher_input_chunk, teacher_weight)
 
         # log-softmax with temperature
         student_logits_chunk = student_logits_chunk / temperature

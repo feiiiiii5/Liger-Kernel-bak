@@ -56,8 +56,8 @@ def fused_linear_jsd_forward(
         student_input_chunk = student_input[start_idx:end_idx]
         teacher_input_chunk = teacher_input[start_idx:end_idx]
 
-        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(torch.float32)
-        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
+        student_logits_chunk = student_input_chunk.float() @ student_weight.float().t()
+        teacher_logits_chunk = teacher_input_chunk.float() @ teacher_weight.float().t()
         chunk_n_rows = student_logits_chunk.shape[0]
 
         loss_chunk = loss_1d[start_idx:end_idx]

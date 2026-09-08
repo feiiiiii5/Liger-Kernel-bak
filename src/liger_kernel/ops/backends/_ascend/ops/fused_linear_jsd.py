@@ -90,10 +90,12 @@ def fused_linear_jsd_forward(
         teacher_input_chunk = teacher_input[start_idx:end_idx]
 
         # shape: chunk_size x V
-        # For anything starting from logits to the final JSD loss, we do computation
-        # in FP32 to avoid losing numerical stability.
-        student_logits_chunk = (student_input_chunk @ student_weight.t()).to(torch.float32)
-        teacher_logits_chunk = (teacher_input_chunk @ teacher_weight.t()).to(torch.float32)
+        # Project directly in FP32: the GEMM accumulator is FP32, so keep it
+        # instead of rounding logits to the input dtype first. Numerically
+        # equivalent to torch.mm(..., out_dtype=torch.float32) where supported;
+        # NPU has no out_dtype path, so upcast explicitly.
+        student_logits_chunk = student_input_chunk.float() @ student_weight.float().t()
+        teacher_logits_chunk = teacher_input_chunk.float() @ teacher_weight.float().t()
         chunk_n_rows = student_logits_chunk.shape[0]
 
         # unreduced loss

@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from test.transformers.test_jsd import JSD as TorchJSD
 from test.utils import assert_verbose_allclose
@@ -41,8 +42,12 @@ class TorchLMHeadJSD(torch.nn.Module):
         self.temperature = temperature
 
     def forward(self, student_input, teacher_input, label=None):
-        student_logits = self.student_lin(student_input).to(torch.float32)
-        teacher_logits = self.teacher_lin(teacher_input).to(torch.float32)
+        # Project directly in FP32: a low-precision GEMM followed by
+        # `.to(fp32)` would round logits to the input mantissa first (the bug
+        # fixed in fused_linear_jsd_forward). Upcasting both operands keeps the
+        # FP32 accumulator, matching the kernel's documented intent.
+        student_logits = F.linear(student_input.float(), self.student_lin.weight.float())
+        teacher_logits = F.linear(teacher_input.float(), self.teacher_lin.weight.float())
         student_prob = torch.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_prob = torch.log_softmax(teacher_logits / self.temperature, dim=-1)
 
@@ -122,18 +127,18 @@ def test_correctness(B, T, H, V, scalar, dtype, beta, temperature, atol, rtol):
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.randn(
         V, H // 2, device=device, dtype=dtype
     )
-    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
 
-    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
+    _tensor = torch.randn(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
-    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    teacher_input = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
 
     with torch.autograd.detect_anomaly():
         output1 = torch_lm_head_jsd(_input1, teacher_input)
@@ -198,18 +203,18 @@ def test_correctness_with_ignore_index(B, T, H, V, scalar, dtype, beta, ignore_i
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.randn(
         V, H // 2, device=device, dtype=dtype
     )
-    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
 
-    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
+    _tensor = torch.randn(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
-    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    teacher_input = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
 
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
@@ -257,15 +262,15 @@ def test_correctness_with_ignore_index(B, T, H, V, scalar, dtype, beta, ignore_i
 @pytest.mark.parametrize("accum_dtype", [None, torch.float32])
 def test_correctness_functional(B, T, H, V, scalar, dtype, beta, ignore_index, temperature, accum_dtype, atol, rtol):
     # init the linear in all FusedLinearJSDs with the same weights
-    _weight = torch.rand(V, H // 2, device=device, dtype=dtype)
+    _weight = torch.randn(V, H // 2, device=device, dtype=dtype)
     _weight1 = _weight.detach().clone().requires_grad_(True)
     _weight2 = _weight.detach().clone().requires_grad_(True)
-    teacher_weight = torch.rand(V, H, device=device, dtype=dtype)
+    teacher_weight = torch.randn(V, H, device=device, dtype=dtype)
 
-    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
+    _tensor = torch.randn(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
-    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    teacher_input = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
 
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
@@ -353,18 +358,18 @@ def test_correctness_all_ignored(B, T, H, V, scalar, dtype, beta, ignore_index, 
     ).to(device)
 
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.randn(
         V, H // 2, device=device, dtype=dtype
     )
-    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
 
-    _tensor = torch.rand(B * T, H // 2, device=device, dtype=dtype) * scalar
+    _tensor = torch.randn(B * T, H // 2, device=device, dtype=dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
-    teacher_input = torch.rand(B * T, H, device=device, dtype=dtype) * scalar
+    teacher_input = torch.randn(B * T, H, device=device, dtype=dtype) * scalar
 
     label = torch.full((B * T,), ignore_index, device=device, dtype=torch.long)
 
@@ -415,18 +420,18 @@ def test_amp(autocast_dtype, atol, rtol):
         beta=beta,
     ).to(device)
     # init the linear in all FusedLinearJSDs with the same weights
-    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.student_lin.weight.data = liger_lm_head_jsd.student_lin.weight.data = torch.randn(
         V, H // 2, device=device, dtype=dtype
     )
-    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.rand(
+    torch_lm_head_jsd.teacher_lin.weight.data = liger_lm_head_jsd.teacher_lin.weight.data = torch.randn(
         V, H, device=device, dtype=dtype
     )
 
-    _tensor = torch.rand(B * T, H // 2, device=device, dtype=autocast_dtype) * scalar
+    _tensor = torch.randn(B * T, H // 2, device=device, dtype=autocast_dtype) * scalar
     _input1 = _tensor.detach().clone().requires_grad_(True)
     _input2 = _tensor.detach().clone().requires_grad_(True)
 
-    teacher_input = torch.rand(B * T, H, device=device, dtype=autocast_dtype) * scalar
+    teacher_input = torch.randn(B * T, H, device=device, dtype=autocast_dtype) * scalar
 
     label = torch.randint(0, V, (B * T,), device=device, dtype=torch.long)
 
